@@ -1,0 +1,15 @@
+PASOS RÁPIDOS (Windows / VS Code)
+
+1) Abre VS Code y abre la carpeta donde descargarás estos archivos.
+2) Copia 'analisis_compras.py', 'ventas.csv' e 'inventario.csv' a esa carpeta.
+3) Abre una Terminal en VS Code (Ctrl+`).
+4) Crea y activa un entorno virtual:
+   py -m venv .venv
+   .venv\Scripts\activate
+5) Instala dependencias:
+   pip install pandas numpy xlsxwriter
+6) Ejecuta:
+   python analisis_compras.py
+7) Se generará 'resultado_analisis_compras.xlsx'.
+
+Ajusta parámetros en la parte superior del script: LEAD_TIME_DIAS, COBERTURA_MESES, etc.
