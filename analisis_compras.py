@@ -2,44 +2,46 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+import unidecode
 
-# ===========================
-# PARÁMETROS (ajusta a gusto)
-# ===========================
+# Parametros de configuracion
 LEAD_TIME_DIAS = 4
 COBERTURA_MESES = 1.0   # admite fracciones (p.ej. 0.5)
 VENTA_DIAS_SEMANA = 6
-DIAS_VENTA_X_MES = int(VENTA_DIAS_SEMANA * 4.33)  # ~26 si vendes de lun a sáb
+DIAS_VENTA_X_MES = int(VENTA_DIAS_SEMANA * 4.33)  # ~26 si vendes de lun a sab
 Z = 0.0  # omitido por ahora (sin stock de seguridad adicional)
 ABC_UMBRAL_A = 0.80
 ABC_UMBRAL_B = 0.95
 XYZ_UMBRAL_X = 0.30
 XYZ_UMBRAL_Y = 0.60
 
-# ===========================
-# ARCHIVOS
-# ===========================
+# Rutas de archivos
 RUTA_VENTAS = "ventas.csv"          # transaccional con columnas: COD_PROD, Fecha, Cantidad, PRECIO_DESCUENTO
 RUTA_INVENTARIO = "inventario.csv"  # columnas: COD_PROD, Inventario.DESCRIPCION, SALDO ACTUAL
 RUTA_SALIDA_EXCEL = "resultado_analisis_compras.xlsx"
 
-
 def etiqueta_es(ts: pd.Timestamp) -> str:
     """Devuelve etiqueta tipo 'sep-24' para una fecha de inicio de mes."""
-    mapa = {"Jan":"ene","Feb":"feb","Mar":"mar","Apr":"abr","May":"may","Jun":"jun",
-            "Jul":"jul","Aug":"ago","Sep":"sep","Oct":"oct","Nov":"nov","Dec":"dic"}
+    mapa = {
+        "Jan":"ene", "Feb":"feb", "Mar":"mar", "Apr":"abr",
+        "May":"may", "Jun":"jun", "Jul":"jul", "Aug":"ago", 
+        "Sep":"sep", "Oct":"oct", "Nov":"nov", "Dec":"dic"
+    }
     eng = ts.strftime("%b").title()
     yy = ts.strftime("%y")
     return f"{mapa.get(eng, eng.lower())}-{yy}"
 
-
 def preparar_ventas(path_csv: str) -> pd.DataFrame:
     """Lee ventas transaccionales y las agrega a nivel (COD_PROD, Mes) con Cantidad e Ingreso."""
-    # Lee CSV (coma o punto y coma)
     try:
         df = pd.read_csv(path_csv, encoding="utf-8-sig")
     except Exception:
         df = pd.read_csv(path_csv, sep=";", encoding="utf-8-sig")
+
+    # Normalizar descripciones
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].apply(lambda x: unidecode.unidecode(str(x)) if pd.notna(x) else x)
 
     required = {"COD_PROD", "Fecha", "Cantidad", "PRECIO_DESCUENTO"}
     if not required.issubset(df.columns):
@@ -52,21 +54,24 @@ def preparar_ventas(path_csv: str) -> pd.DataFrame:
     if df["Fecha"].isna().all():
         raise ValueError("No se pudo interpretar 'Fecha' en ventas.")
 
-    df["Mes"] = df["Fecha"].dt.to_period("M").to_timestamp()
+    df["Mes"] = df["Fecha"].dt.to_period("M").dt.to_timestamp()
     df["Ingreso"] = df["Cantidad"] * df["PRECIO_DESCUENTO"]
 
     return df.groupby(["COD_PROD","Mes"], as_index=False).agg(
         Cantidad=("Cantidad","sum"),
         Ingreso=("Ingreso","sum")
     )
-
-
 def preparar_inventario(path_csv: str) -> pd.DataFrame:
-    """Prepara inventario (sin costo). Requiere: COD_PROD, Inventario.DESCRIPCION, SALDO ACTUAL."""
+    """Prepara inventario. Requiere: COD_PROD, Inventario.DESCRIPCION, SALDO ACTUAL."""
     try:
         inv = pd.read_csv(path_csv, encoding="utf-8-sig")
     except Exception:
         inv = pd.read_csv(path_csv, sep=";", encoding="utf-8-sig")
+
+    # Normalizar descripciones
+    for col in inv.columns:
+        if inv[col].dtype == 'object':
+            inv[col] = inv[col].apply(lambda x: unidecode.unidecode(str(x)) if pd.notna(x) else x)
 
     rename = {
         "Inventario.DESCRIPCION": "DESCRIPCION",
@@ -81,7 +86,6 @@ def preparar_inventario(path_csv: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Inventario con columnas faltantes: {missing}. Esperado: {expected}")
     return inv[expected]
-
 
 def clasificar_abc(df_valor: pd.DataFrame) -> pd.DataFrame:
     """Clasificación ABC por ingresos: A hasta 80%, B hasta 95%, C resto."""
@@ -98,21 +102,19 @@ def clasificar_abc(df_valor: pd.DataFrame) -> pd.DataFrame:
     df_valor["ABC"] = df_valor["ParticipacionAcum"].apply(etiqueta)
     return df_valor
 
-
 def clasificar_xyz(cv: float) -> str:
     """Clasificación XYZ por coeficiente de variación."""
     if cv <= XYZ_UMBRAL_X: return "X"
     elif cv <= XYZ_UMBRAL_Y: return "Y"
     else: return "Z"
 
-
 def main():
     try:
-        # ======= Cargar y preparar datos =======
-        ventas = preparar_ventas(RUTA_VENTAS)   # -> COD_PROD, Mes, Cantidad, Ingreso
+        # Cargar y preparar datos
+        ventas = preparar_ventas(RUTA_VENTAS)
         inv = preparar_inventario(RUTA_INVENTARIO)
 
-        # ======= Pivotes de cantidades e ingresos =======
+        # Pivotes de cantidades e ingresos
         pivot = ventas.pivot_table(index="COD_PROD", columns="Mes", values="Cantidad", aggfunc="sum").fillna(0)
         pivot = pivot.reindex(sorted(pivot.columns), axis=1)
 
@@ -129,27 +131,25 @@ def main():
         ventas_last12 = pivot[last12]
         ingresos_last12 = pivot_ing[last12]
 
-        # ======= Métricas (cantidades) =======
+        # Métricas (cantidades)
         prom12 = ventas_last12.mean(axis=1)
         desv = pivot.std(axis=1, ddof=1).fillna(0)
         cv = (desv / pivot.mean(axis=1).replace(0, np.nan)).fillna(0)
 
-        # ======= ABC por ingresos 12M =======
+        # ABC por ingresos 12M
         ingresos_12m = ingresos_last12.sum(axis=1)
         df_valor = clasificar_abc(pd.DataFrame({
             "COD_PROD": ingresos_12m.index,
             "ValorConsumo": ingresos_12m.values
         }))
-
-        # ======= Inventarios (Z=0.0) =======
+        # Inventarios (Z=0.0)
         prom_diaria = prom12 / max(DIAS_VENTA_X_MES, 1)
         demanda_lt = prom_diaria * LEAD_TIME_DIAS
-        # Si quisieras devolver a usar SS: desv_diaria = ... ; ss = Z*desv_diaria*(LEAD_TIME_DIAS**0.5)
         inv_min = (demanda_lt).fillna(0)  # + ss si reactivas stock de seguridad
         inv_obj = inv_min + (prom12 * COBERTURA_MESES)
         inv_max = inv_obj
 
-        # ======= Resumen base =======
+        # Resumen base
         resumen = (inv
                    .merge(prom12.rename("PROM_12M"), left_on="COD_PROD", right_index=True)
                    .merge(desv.rename("DesviacionEstandar"), left_on="COD_PROD", right_index=True)
@@ -192,7 +192,7 @@ def main():
                                 left_on="COD_PROD", right_index=True, how="left")
         resumen["VALOR_VENTAS_12M"] = resumen["VALOR_VENTAS_12M"].fillna(0)
 
-        # ---------- FORMATEOS y REDONDEOS ----------
+        # Formateos y Redondeos
         for col in ["PROM_12M","DesviacionEstandar","INV_MIN","INV_MAX","INV_OBJETIVO",
                     "CANT_A_COMPRAR","VALOR_VENTAS_12M","ValorConsumo"]:
             if col in resumen.columns:
@@ -204,9 +204,8 @@ def main():
             resumen["Participacion"] = pd.to_numeric(resumen["Participacion"], errors="coerce").round(4)
         if "ParticipacionAcum" in resumen.columns:
             resumen["ParticipacionAcum"] = pd.to_numeric(resumen["ParticipacionAcum"], errors="coerce").round(4)
-        # -------------------------------------------
 
-        # ======= Escribir Excel (con defensas RangeIndex) =======
+        # Escribir Excel
         with pd.ExcelWriter(RUTA_SALIDA_EXCEL, engine="xlsxwriter") as w:
             base = ["COD_PROD","DESCRIPCION","SALDO_ACTUAL"]
             analit = ["TOTAL_VENTAS_12M","PROM_12M","VALOR_VENTAS_12M",
@@ -216,22 +215,23 @@ def main():
                       "INV_MIN","INV_MAX","INV_OBJETIVO","ESTADO","CANT_A_COMPRAR"]
             cols = base + colnames_last12 + analit
 
-            # 1) Forzar encabezados string
+            # Forzar encabezados string
             to_write = resumen[cols].copy()
             to_write.columns = [str(c) for c in to_write.columns]
 
             to_write.to_excel(w, index=False, sheet_name="Analisis")
 
-            workbook  = w.book
+            workbook = w.book
             ws = w.sheets["Analisis"]
 
             try:
+                # Formatos
                 formato_porcentaje = workbook.add_format({'num_format': '0.00%'})
-                formato_numero     = workbook.add_format({'num_format': '0.00'})
-                formato_bold       = workbook.add_format({'bold': True})
-                formato_mute       = workbook.add_format({'font_color': '#666666'})
-                formato_box        = workbook.add_format({'border': 1})
-                formato_box_bold   = workbook.add_format({'border': 1, 'bold': True})
+                formato_numero = workbook.add_format({'num_format': '0.00'})
+                formato_bold = workbook.add_format({'bold': True})
+                formato_mute = workbook.add_format({'font_color': '#666666'})
+                formato_box = workbook.add_format({'border': 1})
+                formato_box_bold = workbook.add_format({'border': 1, 'bold': True})
 
                 headers = list(to_write.columns)
                 def pos(col_name: str):
@@ -251,54 +251,54 @@ def main():
                 if dpos is not None:
                     ws.set_column(int(dpos), int(dpos), 12, formato_numero)
 
-                # ====== Leyenda ======
-                n_filas = int(to_write.shape[0])   # asegurar int
+                # Leyenda
+                n_filas = int(to_write.shape[0])
                 start_row = n_filas + 3
 
-                ws.write(start_row, 0, "Leyenda y parámetros usados", formato_bold)
+                ws.write(start_row, 0, "Leyenda y parametros usados", formato_bold)
                 ws.write(start_row+1, 0, "Generado", formato_mute)
                 ws.write(start_row+1, 1, pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
 
-                ws.write(start_row+2, 0, "Lead Time (días)", formato_mute)
+                ws.write(start_row+2, 0, "Lead Time (dias)", formato_mute)
                 ws.write_number(start_row+2, 1, float(LEAD_TIME_DIAS), formato_numero)
 
                 ws.write(start_row+3, 0, "Cobertura (meses)", formato_mute)
                 ws.write_number(start_row+3, 1, float(COBERTURA_MESES), formato_numero)
 
-                ws.write(start_row+4, 0, "Días de venta/semana", formato_mute)
+                ws.write(start_row+4, 0, "Dias de venta/semana", formato_mute)
                 ws.write_number(start_row+4, 1, float(VENTA_DIAS_SEMANA), formato_numero)
 
                 # ABC fijo (por ingresos 12M)
-                ws.write(start_row+6, 0, "Clasificación ABC (por ingresos 12M)", formato_box_bold)
+                ws.write(start_row+6, 0, "Clasificacion ABC (por ingresos 12M)", formato_box_bold)
                 ws.write(start_row+7, 0, "A (Alta)", formato_box)
-                ws.write(start_row+7, 1, "Participación acumulada de ingresos ≤ 80%", formato_box)
+                ws.write(start_row+7, 1, "Participacion acumulada de ingresos <= 80%", formato_box)
                 ws.write(start_row+8, 0, "B (Media)", formato_box)
-                ws.write(start_row+8, 1, "80% < participación acumulada ≤ 95%", formato_box)
+                ws.write(start_row+8, 1, "80% < participacion acumulada <= 95%", formato_box)
                 ws.write(start_row+9, 0, "C (Baja)", formato_box)
-                ws.write(start_row+9, 1, "Participación acumulada > 95%", formato_box)
+                ws.write(start_row+9, 1, "Participacion acumulada > 95%", formato_box)
 
-                # XYZ según CV
-                ws.write(start_row+11, 0, "Clasificación XYZ (por CV)", formato_box_bold)
+                # XYZ segun CV
+                ws.write(start_row+11, 0, "Clasificacion XYZ (por CV)", formato_box_bold)
                 ws.write(start_row+12, 0, "X (Estables)", formato_box)
-                ws.write(start_row+12, 1, f"CV ≤ {XYZ_UMBRAL_X:.2f}", formato_box)
+                ws.write(start_row+12, 1, f"CV <= {XYZ_UMBRAL_X:.2f}", formato_box)
                 ws.write(start_row+13, 0, "Y (Moderadamente variables)", formato_box)
-                ws.write(start_row+13, 1, f"{XYZ_UMBRAL_X:.2f} < CV ≤ {XYZ_UMBRAL_Y:.2f}", formato_box)
-                ws.write(start_row+14, 0, "Z (Erráticos)", formato_box)
+                ws.write(start_row+13, 1, f"{XYZ_UMBRAL_X:.2f} < CV <= {XYZ_UMBRAL_Y:.2f}", formato_box)
+                ws.write(start_row+14, 0, "Z (Erraticos)", formato_box)
                 ws.write(start_row+14, 1, f"CV > {XYZ_UMBRAL_Y:.2f}", formato_box)
 
                 ws.write(start_row+16, 0, "Nota", formato_bold)
-                ws.write(start_row+17, 0, "CV, Participación y Participación acumulada se muestran como porcentaje en Excel.", formato_mute)
+                ws.write(start_row+17, 0, "CV, Participacion y Participacion acumulada se muestran como porcentaje en Excel.", formato_mute)
 
             except Exception:
                 # Si algo del formato falla, seguimos generando el archivo sin aplicar estilos.
                 pass
 
-        print(f"OK: se generó {Path(RUTA_SALIDA_EXCEL).resolve()}")
+        print(f"OK: se genero {Path(RUTA_SALIDA_EXCEL).resolve()}")
 
     except Exception as e:
         print("[ERROR]", e)
         sys.exit(1)
 
-
 if __name__ == "__main__":
     main()
+
